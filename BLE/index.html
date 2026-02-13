@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D BLE Plotter (F0FF Fix)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; color: white; font-family: sans-serif; touch-action: none; }
+        #ui { position: absolute; top: 0; left: 0; right: 0; z-index: 9999; background: rgba(20,20,20,0.8); padding: 10px; display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; border-bottom: 1px solid #444; }
+        button { cursor: pointer; color: white; border: none; padding: 10px 5px; border-radius: 4px; font-weight: bold; font-size: 11px; flex: 1; min-width: 65px; }
+        #connectBtn { background: #2196F3; }
+        #startBtn { background: #E91E63; }
+        #stopBtn { background: #607D8B; }
+        #getInfoBtn { background: #FF9800; }
+        #simBtn { background: #4CAF50; }
+        #viewport { perspective: 1200px; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; padding-top: 80px; box-sizing: border-box; }
+        #world { position: relative; width: 0; height: 0; transform-style: preserve-3d; transform: translateZ(-150px) rotateX(-70deg) rotateZ(20deg); }
+        .grid { position: absolute; width: 300px; height: 300px; border: 1px solid #333; background-image: linear-gradient(#222 1px, transparent 1px), linear-gradient(90deg, #222 1px, transparent 1px); background-size: 30px 30px; transform: translate(-150px, -150px); }
+        .axis-3d { position: absolute; transform-style: preserve-3d; transform-origin: left center; height: 0; width: 150px; }
+        .rod-v, .rod-h { position: absolute; width: 100%; height: 2px; top: -1px; background: currentColor; box-shadow: 0 0 5px currentColor; }
+        .rod-h { transform: rotateX(90deg); }
+        .label { position: absolute; left: 160px; top: -10px; font-weight: bold; font-size: 16px; transform: rotateX(90deg); }
+        .ball-3d { position: absolute; transform-style: preserve-3d; width: 0; height: 0; }
+        .ball-p { position: absolute; width: 4px; height: 4px; background: #fff; border-radius: 50%; left: -2px; top: -2px; box-shadow: 0 0 5px #fff; }
+        #log { position: absolute; bottom: 10px; left: 10px; right: 10px; font-size: 10px; color: #0f0; pointer-events: none; max-height: 80px; overflow: hidden; background: rgba(0,0,0,0.4); border-radius: 5px; padding: 5px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <button id="connectBtn">CONNECT</button>
+        <button id="startBtn">START</button>
+        <button id="stopBtn">STOP</button>
+        <button id="getInfoBtn">GET (g)</button>
+        <button id="simBtn">SIM</button>
+    </div>
+
+    <div id="log">System: Ready. (Z-Vertical)</div>
+
+    <div id="viewport">
+        <div id="world">
+            <div class="grid"></div>
+            <div class="axis-3d" style="color:#f44; transform:rotateZ(0deg)"><div class="rod-v"></div><div class="rod-h"></div><div class="label">X</div></div>
+            <div class="axis-3d" style="color:#4f4; transform:rotateZ(90deg)"><div class="rod-v"></div><div class="rod-h"></div><div class="label" style="transform:rotateX(90deg) rotateY(-90deg)">Y</div></div>
+            <div class="axis-3d" style="color:#44f; transform:rotateY(-90deg)"><div class="rod-v"></div><div class="rod-h"></div><div class="label" style="transform:rotateY(90deg)">Z</div></div>
+        </div>
+    </div>
+
+    <script>
+        const world = document.getElementById('world');
+        const logBox = document.getElementById('log');
+        let rotX = -70, rotZ = 20, zoom = -150, lastX, lastY, lastDist = 0;
+        let writeChar = null;
+
+        function print(m) { logBox.innerHTML = "> " + m + "<br>" + logBox.innerHTML.substring(0, 300); }
+
+        // 手勢
+        window.onmousedown = window.ontouchstart = (e) => {
+            const t = e.touches ? e.touches : e;
+            lastX = t.clientX; lastY = t.clientY;
+            if (e.touches && e.touches.length === 2) lastDist = Math.hypot(e.touches.pageX - e.touches.pageX, e.touches.pageY - e.touches.pageY);
+        };
+        window.onmousemove = window.ontouchmove = (e) => {
+            if (e.target.closest('#ui')) return;
+            const t = e.touches ? e.touches : e;
+            if (!e.touches || e.touches.length === 1) {
+                let dx = t.clientX - lastX; let dy = t.clientY - lastY;
+                rotZ += dx * 0.4; rotX -= dy * 0.4;
+                lastX = t.clientX; lastY = t.clientY;
+            } else if (e.touches.length === 2) {
+                let d = Math.hypot(e.touches.pageX - e.touches.pageX, e.touches.pageY - e.touches.pageY);
+                zoom += (d - lastDist) * 2; lastDist = d;
+            }
+            world.style.transform = `translateZ(${zoom}px) rotateX(${rotX}deg) rotateZ(${rotZ}deg)`;
+        };
+
+        function spawnPoint(x, y, z) {
+            const b = document.createElement('div');
+            b.className = 'ball-3d';
+            b.innerHTML = `<div class="ball-p"></div><div class="ball-p" style="transform:rotateY(90deg)"></div>`;
+            const s = 80; b.style.transform = `translate3d(${x*s}px, ${y*s}px, ${z*s}px)`;
+            world.appendChild(b); setTimeout(() => b.remove(), 1000);
+        }
+
+        async function sendBleCmd(cmd) {
+            if (!writeChar) { print("Error: No Write Char!"); return; }
+            try {
+                await writeChar.writeValue(new TextEncoder().encode(cmd + "\r\n"));
+                print("Sent: " + cmd);
+            } catch (err) { print("Send Error: " + err.message); }
+        }
+
+        document.getElementById('connectBtn').onclick = async () => {
+            try {
+                print("Scanning for F0FF...");
+                // 使用 acceptAllDevices 繞過過濾問題
+                const device = await navigator.bluetooth.requestDevice({ 
+                    acceptAllDevices: true,
+                    optionalServices: ['0000fff0-0000-1000-8000-00805f9b34fb']
+                });
+
+                const server = await device.gatt.connect();
+                // 強制嘗試獲取 FFF0 服務
+                const service = await server.getPrimaryService('0000fff0-0000-1000-8000-00805f9b34fb');
+                const chars = await service.getCharacteristics();
+                
+                for (let char of chars) {
+                    // 尋找 Read/Notify (FFF1)
+                    if (char.properties.notify || char.properties.indicate) {
+                        await char.startNotifications();
+                        char.oncharacteristicvaluechanged = (e) => {
+                            const str = new TextDecoder().decode(e.target.value);
+                            print("Recv: " + str);
+                            const p = str.match(/-?\d+\.\d+/g);
+                            if (p && p.length >= 3) {
+                                spawnPoint(parseFloat(p[p.length-3]), parseFloat(p[p.length-2]), parseFloat(p[p.length-1]));
+                            }
+                        };
+                        print("Notify Ready: " + char.uuid.substring(4,8));
+                    }
+                    // 尋找 Write (FFF2)
+                    if (char.properties.write || char.properties.writeWithoutResponse) {
+                        writeChar = char;
+                        print("Write Ready: " + char.uuid.substring(4,8));
+                    }
+                }
+                print("Connected: " + device.name);
+            } catch (err) { print("Error: " + err.message); }
+        };
+
+        document.getElementById('startBtn').onclick = () => sendBleCmd("dp20");
+        document.getElementById('stopBtn').onclick = () => sendBleCmd("dp00");
+        document.getElementById('getInfoBtn').onclick = () => sendBleCmd("g");
+        document.getElementById('simBtn').onclick = () => {
+            if (window.sIdx) { clearInterval(window.sIdx); window.sIdx = null; } 
+            else { window.sIdx = setInterval(() => spawnPoint((Math.random()*2)-1, (Math.random()*2)-1, (Math.random()*2)-1), 100); }
+        };
+    </script>
+</body>
+</html>
