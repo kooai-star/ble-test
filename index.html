@@ -89,42 +89,42 @@
         }
 
         // --- BLE 連接與自動識別 ---
-        document.getElementById('connectBtn').onclick = async () => {
-            try {
-                print("掃描 F0FF/FFF0...");
-                const device = await navigator.bluetooth.requestDevice({ 
-                    acceptAllDevices: true,
-                    optionalServices: [0xfff0, 0xf0ff, '0000fff0-0000-1000-8000-00805f9b34fb']
-                });
+        // --- 替換 connectBtn 內的迴圈邏輯 ---
+document.getElementById('connectBtn').onclick = async () => {
+    try {
+        print("開始掃描...");
+        const device = await navigator.bluetooth.requestDevice({ 
+            acceptAllDevices: true,
+            optionalServices: ['0000fff0-0000-1000-8000-00805f9b34fb']
+        });
 
-                const server = await device.gatt.connect();
-                print("已連接，搜尋服務...");
-                
-                const services = await server.getPrimaryServices();
-                for (let service of services) {
-                    let chars = await service.getCharacteristics();
-                    for (let char of chars) {
-                        // 尋找 Notify (接收數據)
-                        if (char.properties.notify || char.properties.indicate) {
-                            await char.startNotifications();
-                            char.oncharacteristicvaluechanged = (e) => {
-                                const str = new TextDecoder().decode(e.target.value);
-                                print("Recv: " + str);
-                                const p = str.match(/-?\d+\.\d+/g);
-                                if (p && p.length >= 3) spawnPoint(parseFloat(p[p.length-3]), parseFloat(p[p.length-2]), parseFloat(p[p.length-1]));
-                            };
-                            print("發現讀取通道: " + char.uuid.slice(-4));
-                        }
-                        // 尋找 Write (發送指令)
-                        if (char.properties.write || char.properties.writeWithoutResponse) {
-                            writeChar = char;
-                            print("發現寫入通道: " + char.uuid.slice(-4));
-                        }
-                    }
-                }
-                print("連線就緒。");
-            } catch (err) { print("Error: " + err.message); }
-        };
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService('0000fff0-0000-1000-8000-00805f9b34fb');
+        
+        // 強制鎖定 FFF1 為接收 (Notify)
+        try {
+            const readChar = await service.getCharacteristic('0000fff1-0000-1000-8000-00805f9b34fb');
+            await readChar.startNotifications();
+            readChar.oncharacteristicvaluechanged = (e) => {
+                const str = new TextDecoder().decode(e.target.value);
+                print("Recv: " + str);
+                const p = str.match(/-?\d+\.\d+/g);
+                if (p && p.length >= 3) spawnPoint(parseFloat(p[p.length-3]), parseFloat(p[p.length-2]), parseFloat(p[p.length-1]));
+            };
+            print("FFF1 接收就緒");
+        } catch(e) { print("FFF1 接收失敗: " + e.message); }
+
+        // 強制鎖定 FFF2 為發送 (Write)
+        try {
+            writeChar = await service.getCharacteristic('0000fff2-0000-1000-8000-00805f9b34fb');
+            print("FFF2 發送就緒");
+        } catch(e) { print("FFF2 發送失敗: " + e.message); }
+
+        print("連線成功: " + device.name);
+    } catch (err) { print("連線錯誤: " + err.message); }
+};
+
+
 
         async function send(c) {
             if (!writeChar) return print("未找到寫入通道");
